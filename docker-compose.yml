@@ -74,6 +74,20 @@ services:
     extra_hosts:
       - "host.docker.internal:host-gateway"
 
+  # One-shot service: tạo logical replication subscription sau khi postgres healthy.
+  # Chạy 1 lần rồi exit. Dùng restart: "no" để không restart lại.
+  excel-reporting-setup:
+    image: postgres:16-alpine
+    depends_on:
+      postgres-excel:
+        condition: service_healthy
+    environment:
+      PGPASSWORD: excel
+    volumes:
+      - ./db/docker-init/create-subscription.sh:/create-subscription.sh
+    entrypoint: ["sh", "/create-subscription.sh"]
+    restart: "no"
+
   excel-provider-ui:
     build:
       context: ./frontend

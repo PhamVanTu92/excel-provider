@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # ════════════════════════════════════════════════════════════════════════════
-# 00_setup_reporting.sh
-# Chạy tự động bởi PostgreSQL Docker entrypoint lần đầu khởi động.
+# 00_setup_reporting.sh — chạy tự động khi PostgreSQL init lần đầu
+# Chỉ làm steps 1-5 (không tạo subscription ở đây vì TCP chưa sẵn sàng).
+# Subscription được tạo bởi service excel-reporting-setup sau khi postgres healthy.
 # ════════════════════════════════════════════════════════════════════════════
 set -e
 
@@ -58,8 +59,7 @@ psql -v ON_ERROR_STOP=1 -U "$POSTGRES_USER" -d "$POSTGRES_DB" --no-password <<-E
         IF NOT EXISTS (
             SELECT 1 FROM pg_publication WHERE pubname = 'excel_reporting_pub'
         ) THEN
-            CREATE PUBLICATION excel_reporting_pub
-                FOR TABLE sales, products, regions;
+            CREATE PUBLICATION excel_reporting_pub FOR TABLE sales, products, regions;
             RAISE NOTICE 'Publication excel_reporting_pub created.';
         ELSE
             RAISE NOTICE 'Publication excel_reporting_pub already exists, skipping.';
@@ -129,19 +129,4 @@ psql -v ON_ERROR_STOP=1 -U "$POSTGRES_USER" -d "excel_reporting" --no-password <
         FOR EACH STATEMENT EXECUTE FUNCTION notify_reporting_change();
 EOSQL
 
-echo ">>> [reporting-init] Step 6: Tạo subscription..."
-SUB_COUNT=$(psql -U "$POSTGRES_USER" -d "excel_reporting" --no-password \
-    -tAc "SELECT COUNT(*) FROM pg_subscription WHERE subname = 'excel_reporting_sub'" 2>/dev/null || echo "0")
-
-if [ "$SUB_COUNT" = "0" ]; then
-    psql -v ON_ERROR_STOP=1 -U "$POSTGRES_USER" -d "excel_reporting" --no-password <<-EOSQL
-        CREATE SUBSCRIPTION excel_reporting_sub
-            CONNECTION 'host=127.0.0.1 port=5432 dbname=${POSTGRES_DB} user=${POSTGRES_USER} password=${POSTGRES_PASSWORD}'
-            PUBLICATION excel_reporting_pub;
-EOSQL
-    echo ">>> [reporting-init] Subscription created."
-else
-    echo ">>> [reporting-init] Subscription đã tồn tại, bỏ qua."
-fi
-
-echo ">>> [reporting-init] Setup hoàn tất!"
+echo ">>> [reporting-init] Steps 1-5 hoàn tất! Subscription sẽ được tạo bởi excel-reporting-setup service."
