@@ -11,12 +11,12 @@ namespace ReportingPlatform.ExcelProvider.Operations;
 /// </summary>
 public sealed class DashboardSummaryHandler : IOperationHandler
 {
-    private readonly ExcelProviderDb _db;
+    private readonly ReportingDb _db;
     private readonly ILogger<DashboardSummaryHandler> _logger;
 
     public string OperationPattern => "report.dashboard.summary";
 
-    public DashboardSummaryHandler(ExcelProviderDb db, ILogger<DashboardSummaryHandler> logger)
+    public DashboardSummaryHandler(ReportingDb db, ILogger<DashboardSummaryHandler> logger)
     {
         _db     = db;
         _logger = logger;

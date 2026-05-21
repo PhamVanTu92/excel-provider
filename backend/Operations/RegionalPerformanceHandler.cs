@@ -11,12 +11,12 @@ namespace ReportingPlatform.ExcelProvider.Operations;
 /// </summary>
 public sealed class RegionalPerformanceHandler : IOperationHandler
 {
-    private readonly ExcelProviderDb _db;
+    private readonly ReportingDb _db;
     private readonly ILogger<RegionalPerformanceHandler> _logger;
 
     public string OperationPattern => "report.regional.performance";
 
-    public RegionalPerformanceHandler(ExcelProviderDb db, ILogger<RegionalPerformanceHandler> logger)
+    public RegionalPerformanceHandler(ReportingDb db, ILogger<RegionalPerformanceHandler> logger)
     {
         _db     = db;
         _logger = logger;

@@ -22,12 +22,25 @@ var config = builder.Configuration;
 builder.Services.Configure<ProviderOptions>(config.GetSection(ProviderOptions.SectionName));
 builder.Services.Configure<IngestionOptions>(config.GetSection(IngestionOptions.Section));
 
-// ── Database (postgres-excel) ─────────────────────────────────────────────────
+// ── Database — Source (postgres excel_provider, read+write) ──────────────────
 var excelDbConnStr = config.GetConnectionString("ExcelDb")
     ?? "Host=localhost;Port=5434;Database=excel_provider;Username=excel;Password=excel";
 
 builder.Services.AddSingleton(_ => NpgsqlDataSource.Create(excelDbConnStr));
 builder.Services.AddSingleton<ExcelProviderDb>();
+
+// ── Database — Reporting (postgres excel_reporting, read-only replica) ────────
+var reportingConnStr = config.GetConnectionString("ReportingDb")
+    ?? "Host=localhost;Port=5434;Database=excel_reporting;Username=excel;Password=excel";
+
+// Keyed so it doesn't conflict with the source NpgsqlDataSource registration.
+builder.Services.AddKeyedSingleton<NpgsqlDataSource>(
+    "reporting", (_, _) => NpgsqlDataSource.Create(reportingConnStr));
+
+builder.Services.AddSingleton<ReportingDb>(sp => new ReportingDb(
+    sp.GetRequiredKeyedService<NpgsqlDataSource>("reporting"),
+    reportingConnStr,
+    sp.GetRequiredService<ILogger<ReportingDb>>()));
 
 // ── HttpClients ───────────────────────────────────────────────────────────────
 builder.Services.AddHttpClient<TokenService>(client =>
@@ -57,6 +70,10 @@ builder.Services.AddSingleton<OperationDispatcher>();
 builder.Services.AddSingleton<ProviderBridgeClient>();
 builder.Services.AddHostedService(sp => sp.GetRequiredService<ProviderBridgeClient>());
 
+// ── Replication listener (BackgroundService) ──────────────────────────────────
+// Listens for pg_notify on excel_reporting and pushes datasource.updated to HDOS.
+builder.Services.AddHostedService<ReplicationListenerService>();
+
 // ── HTTP Management API ───────────────────────────────────────────────────────
 builder.Services.AddSingleton<NotificationService>();
 builder.Services.AddSingleton<DataManagementService>();
@@ -70,7 +87,7 @@ var app = builder.Build();
 var logger       = app.Services.GetRequiredService<ILogger<Program>>();
 var providerOpts = app.Services.GetRequiredService<IOptions<ProviderOptions>>().Value;
 
-// Initialize postgres-excel database (create tables + seed if empty)
+// Initialize source DB (create tables + seed if empty)
 var db = app.Services.GetRequiredService<ExcelProviderDb>();
 try
 {
@@ -78,7 +95,22 @@ try
 }
 catch (Exception ex)
 {
-    logger.LogWarning(ex, "DB initialization failed — continuing; service will retry on next query");
+    logger.LogWarning(ex, "Source DB initialization failed — continuing; service will retry on next query");
+}
+
+// Initialize reporting DB (create tables + pg_notify triggers — idempotent)
+// NOTE: Logical replication subscription must be created separately via
+//       db/reporting/03_create_subscription.sql (requires superuser).
+var reportingDb = app.Services.GetRequiredService<ReportingDb>();
+try
+{
+    await reportingDb.InitializeAsync();
+}
+catch (Exception ex)
+{
+    logger.LogWarning(ex,
+        "Reporting DB initialization failed — reports will fall back to source DB; " +
+        "ensure excel_reporting database exists and run db/reporting/README.md setup steps");
 }
 
 logger.LogInformation(
