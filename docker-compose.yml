@@ -84,7 +84,7 @@ services:
     environment:
       PGPASSWORD: excel
     volumes:
-      - ./db/docker-init/create-subscription.sh:/create-subscription.sh
+      - ./db/scripts/create-subscription.sh:/create-subscription.sh
     entrypoint: ["sh", "/create-subscription.sh"]
     restart: "no"
 
