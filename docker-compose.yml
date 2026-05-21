@@ -7,17 +7,24 @@
 #
 # Lần đầu:
 #   1. cp .env.example .env  →  điền HDOS_HOST
-#   2. docker compose up -d
+#   2. docker compose up -d --build
 #
 # Port map:
-#   5434 → postgres-excel   (DB riêng)
-#   5600 → excel-provider   (Management API)
-#   3001 → excel-provider-ui (Frontend quản lý dữ liệu)
+#   5434 → postgres-excel       (DB riêng — excel_provider + excel_reporting)
+#   5600 → excel-provider       (Management API + gRPC bridge client)
+#   3001 → excel-provider-ui    (Frontend quản lý dữ liệu)
 
 services:
 
   postgres-excel:
     image: postgres:16-alpine
+    # wal_level=logical bắt buộc để Logical Replication hoạt động.
+    # max_replication_slots / max_wal_senders đủ cho 1 subscription.
+    command: >
+      postgres
+      -c wal_level=logical
+      -c max_replication_slots=5
+      -c max_wal_senders=5
     environment:
       POSTGRES_DB:       excel_provider
       POSTGRES_USER:     excel
@@ -26,11 +33,17 @@ services:
       - "5434:5432"
     volumes:
       - postgres_excel_data:/var/lib/postgresql/data
+      # Init scripts: chạy 1 lần duy nhất khi data dir còn trống.
+      # Tạo excel_reporting DB + publication + subscription tự động.
+      - ./db/docker-init:/docker-entrypoint-initdb.d
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U excel -d excel_provider"]
       interval: 10s
       timeout: 5s
-      retries: 5
+      retries: 10
+      # start_period cho phép init scripts hoàn tất trước khi
+      # healthcheck failure ảnh hưởng đến depends_on.
+      start_period: 30s
 
   excel-provider:
     build:
@@ -38,15 +51,18 @@ services:
       dockerfile: backend/Dockerfile
     restart: unless-stopped
     environment:
-      DOTNET_ENVIRONMENT:         Development
-      ASPNETCORE_URLS:            http://+:5600
-      Provider__ClientId:         excel-provider
-      Provider__ClientSecret:     "${EXCEL_PROVIDER_SECRET:-excel-secret-dev-2024}"
-      Provider__TokenEndpoint:    "http://${HDOS_HOST:-host.docker.internal}:5000/api/v1/providers/token"
-      Provider__BridgeGrpcUrl:    "http://${HDOS_HOST:-host.docker.internal}:5400"
-      Ingestion__BaseUrl:         "http://${HDOS_HOST:-host.docker.internal}:5100"
-      Ingestion__TokenEndpoint:   "http://${HDOS_HOST:-host.docker.internal}:5000/api/v1/providers/token"
-      ConnectionStrings__ExcelDb: "Host=postgres-excel;Database=excel_provider;Username=excel;Password=excel"
+      DOTNET_ENVIRONMENT:              Development
+      ASPNETCORE_URLS:                 http://+:5600
+      Provider__ClientId:              excel-provider
+      Provider__ClientSecret:          "${EXCEL_PROVIDER_SECRET:-excel-secret-dev-2024}"
+      Provider__TokenEndpoint:         "http://${HDOS_HOST:-host.docker.internal}:5000/api/v1/providers/token"
+      Provider__BridgeGrpcUrl:         "http://${HDOS_HOST:-host.docker.internal}:5400"
+      Ingestion__BaseUrl:              "http://${HDOS_HOST:-host.docker.internal}:5100"
+      Ingestion__TokenEndpoint:        "http://${HDOS_HOST:-host.docker.internal}:5000/api/v1/providers/token"
+      # Source DB — read+write (Management API, seeding)
+      ConnectionStrings__ExcelDb:      "Host=postgres-excel;Database=excel_provider;Username=excel;Password=excel"
+      # Reporting DB — read-only replica (tất cả report handlers)
+      ConnectionStrings__ReportingDb:  "Host=postgres-excel;Database=excel_reporting;Username=excel;Password=excel"
     ports:
       - "5600:5600"
     depends_on:
