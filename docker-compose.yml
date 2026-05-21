@@ -20,11 +20,14 @@ services:
     image: postgres:16-alpine
     # wal_level=logical bắt buộc để Logical Replication hoạt động.
     # max_replication_slots / max_wal_senders đủ cho 1 subscription.
-    command: >
-      postgres
-      -c wal_level=logical
-      -c max_replication_slots=5
-      -c max_wal_senders=5
+    command:
+      - postgres
+      - -c
+      - wal_level=logical
+      - -c
+      - max_replication_slots=5
+      - -c
+      - max_wal_senders=5
     environment:
       POSTGRES_DB:       excel_provider
       POSTGRES_USER:     excel
