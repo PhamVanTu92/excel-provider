@@ -1,0 +1,68 @@
+# excel-provider — standalone stack
+# Chạy độc lập, kết nối với HDOS platform qua biến môi trường HDOS_HOST
+#
+# Yêu cầu:
+#   • HDOS platform đang chạy (provider-bridge:5400, request-api:5000, ingestion-api:5100)
+#   • V009 migration đã chạy vào HDOS DB (db/V009__excel_provider_seed.sql)
+#
+# Lần đầu:
+#   1. cp .env.example .env  →  điền HDOS_HOST
+#   2. docker compose up -d
+#
+# Port map:
+#   5434 → postgres-excel   (DB riêng)
+#   5600 → excel-provider   (Management API)
+#   3001 → excel-provider-ui (Frontend quản lý dữ liệu)
+
+services:
+
+  postgres-excel:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB:       excel_provider
+      POSTGRES_USER:     excel
+      POSTGRES_PASSWORD: excel
+    ports:
+      - "5434:5432"
+    volumes:
+      - postgres_excel_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U excel -d excel_provider"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  excel-provider:
+    build:
+      context: .
+      dockerfile: backend/Dockerfile
+    restart: unless-stopped
+    environment:
+      DOTNET_ENVIRONMENT:         Development
+      ASPNETCORE_URLS:            http://+:5600
+      Provider__ClientId:         excel-provider
+      Provider__ClientSecret:     "${EXCEL_PROVIDER_SECRET:-excel-secret-dev-2024}"
+      Provider__TokenEndpoint:    "http://${HDOS_HOST:-host.docker.internal}:5000/api/v1/providers/token"
+      Provider__BridgeGrpcUrl:    "http://${HDOS_HOST:-host.docker.internal}:5400"
+      Ingestion__BaseUrl:         "http://${HDOS_HOST:-host.docker.internal}:5100"
+      Ingestion__TokenEndpoint:   "http://${HDOS_HOST:-host.docker.internal}:5000/api/v1/providers/token"
+      ConnectionStrings__ExcelDb: "Host=postgres-excel;Database=excel_provider;Username=excel;Password=excel"
+    ports:
+      - "5600:5600"
+    depends_on:
+      postgres-excel:
+        condition: service_healthy
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+
+  excel-provider-ui:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    ports:
+      - "3001:80"
+    depends_on:
+      - excel-provider
+
+volumes:
+  postgres_excel_data:

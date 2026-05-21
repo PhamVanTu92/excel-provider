@@ -1,0 +1,254 @@
+syntax = "proto3";
+
+package reporting.provider.v1;
+
+option csharp_namespace = "ReportingPlatform.Provider.V1";
+option go_package = "github.com/reporting-platform/proto/provider/v1;providerv1";
+
+// ─────────────────────────────────────────────────────────────────────────────
+// OperationProvider — the single gRPC service external providers implement.
+//
+// Authentication: providers MUST attach a valid platform JWT to gRPC metadata:
+//   key = "authorization", value = "Bearer <accessToken>"
+//
+// Obtain the accessToken via:
+//   POST /api/v1/providers/token
+//   { "clientId": "...", "clientSecret": "...", "grantType": "client_credentials" }
+//
+// The JWT expires in 900 seconds. Refresh at 80% of lifetime (720s).
+// The server sends RefreshAuthRequired at jwt.exp - 60s.
+// ─────────────────────────────────────────────────────────────────────────────
+service OperationProvider {
+  // Bidirectional streaming connection between provider and platform bridge.
+  //
+  // Protocol sequence:
+  //   1. Provider sends Hello (first message, within 5 seconds).
+  //   2. Bridge validates JWT + Hello; sends Welcome on success.
+  //   3. Bridge streams OperationRequest messages to provider.
+  //   4. Provider streams OperationResponseChunk messages (progress + terminal).
+  //   5. Bridge sends RefreshAuthRequired before JWT expiry; provider must reconnect.
+  //   6. Either side may send Disconnect to gracefully close.
+  //   7. Heartbeat must be sent by provider every heartbeat_interval_seconds.
+  rpc Connect(stream FromProvider) returns (stream ToProvider);
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Top-level message wrappers
+// ─────────────────────────────────────────────────────────────────────────────
+
+// Messages sent FROM the provider TO the platform bridge.
+message FromProvider {
+  oneof message {
+    // First message on stream. Must arrive within 5s of connection.
+    Hello hello = 1;
+
+    // Progress or terminal response for an in-flight request.
+    OperationResponseChunk response_chunk = 2;
+
+    // Keep-alive. Must be sent every heartbeat_interval_seconds.
+    // Missing heartbeat for 30s causes stream close by server.
+    Heartbeat heartbeat = 3;
+  }
+}
+
+// Messages sent FROM the platform bridge TO the provider.
+message ToProvider {
+  oneof message {
+    // Sent after Hello is validated. Signals stream is ready for requests.
+    Welcome welcome = 1;
+
+    // An operation request for the provider to process.
+    OperationRequest request = 2;
+
+    // Cancellation signal for an in-flight request. Best-effort.
+    Cancel cancel = 3;
+
+    // Graceful server-initiated disconnect. Provider should close and reconnect.
+    Disconnect disconnect = 4;
+
+    // Hint: JWT is expiring soon. Provider must reconnect with a fresh JWT.
+    // Sent at jwt.exp - 60s. Stream forcibly closed at jwt.exp if not refreshed.
+    RefreshAuthRequired refresh_auth = 5;
+  }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Handshake messages
+// ─────────────────────────────────────────────────────────────────────────────
+
+// Provider → Bridge. First message on every new stream.
+message Hello {
+  // MUST match jwt.sub. Mismatch → stream rejected with UNAUTHENTICATED.
+  string provider_id = 1;
+
+  // Semver of this provider implementation. Informational.
+  string version = 2;
+
+  // Operations this instance will handle. MUST be a subset of registered operations.
+  // Unregistered operations → stream rejected with INVALID_ARGUMENT.
+  repeated string supported_operations = 3;
+
+  // Arbitrary key-value metadata (e.g. instanceId, language, region).
+  map<string, string> metadata = 4;
+}
+
+// Bridge → Provider. Sent after Hello is validated.
+message Welcome {
+  // Unique session identifier assigned by Bridge. Log this for correlation.
+  string session_id = 1;
+
+  // Maximum number of in-flight requests this instance should hold simultaneously.
+  // Do not exceed this. RabbitMQ prefetch is set to this value.
+  int32 max_concurrent_requests = 2;
+
+  // How often to send Heartbeat messages (seconds). Default: 30.
+  int32 heartbeat_interval_seconds = 3;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Operation request/response messages
+// ─────────────────────────────────────────────────────────────────────────────
+
+// Bridge → Provider. Dispatched for each client operation routed to this provider.
+message OperationRequest {
+  // UUID v7. Idempotency key — same requestId may be re-delivered after disconnect.
+  // Providers MUST return the same terminal result for the same requestId.
+  string request_id = 1;
+
+  // Operation name, e.g. "ml.fraud.score". Matches the registered pattern.
+  string operation = 2;
+
+  // JSON string containing operation parameters. Validated against registered paramsSchema.
+  string params_json = 3;
+
+  // Tenant identifier. MUST be used to scope all data access.
+  string tenant_id = 4;
+
+  // User identifier who submitted the request.
+  string user_id = 5;
+
+  // Hard deadline as Unix milliseconds. Provider SHOULD abort processing after this.
+  // Bridge will send Cancel and publish TIMEOUT regardless.
+  int64 timeout_at_unix_ms = 6;
+
+  // If true, provider should send Progress chunks during processing.
+  // If false, skip all progress chunks (client did not request them).
+  bool wants_progress = 7;
+
+  // W3C traceparent header value. Provider MUST extract and propagate to all
+  // downstream calls (HTTP, DB, ML inference, etc.).
+  string traceparent = 8;
+
+  // Optional correlation ID for cross-request grouping. May be empty string.
+  string correlation_id = 9;
+}
+
+// Provider → Bridge. Sent one or more times per request:
+//   - Zero or more Progress chunks (if wants_progress = true)
+//   - Exactly one Terminal chunk (always required)
+message OperationResponseChunk {
+  // requestId from the corresponding OperationRequest.
+  string request_id = 1;
+
+  oneof chunk {
+    Progress progress = 2;
+    Terminal terminal = 3;
+  }
+}
+
+// A progress update for an in-flight request.
+message Progress {
+  // 1–99. Never 100 — send Terminal instead.
+  int32 percent = 1;
+
+  // Human-readable progress message. May be shown to end users.
+  string message = 2;
+
+  // Unix milliseconds when this progress event was generated.
+  int64 ts_unix_ms = 3;
+}
+
+// Terminal result for a request. Exactly one must be sent per request.
+message Terminal {
+  Status status = 1;
+
+  // Non-empty valid JSON when status = DONE.
+  // Must conform to the registered payloadSchema for the operation.
+  string payload_json = 2;
+
+  // Populated when status = FAILED. Must not contain internal infrastructure details.
+  Error error = 3;
+
+  // Wall-clock processing time in milliseconds (from request received to terminal sent).
+  int64 elapsed_ms = 4;
+}
+
+// Terminal status values.
+enum Status {
+  // Request completed successfully. payload_json contains the result.
+  DONE = 0;
+
+  // Request failed. error field contains the reason.
+  FAILED = 1;
+
+  // Request was cancelled (by client or by Bridge timeout).
+  // payload_json is empty. error is optional.
+  CANCELLED = 2;
+}
+
+// Structured error for failed/cancelled terminals.
+message Error {
+  // Machine-readable error code. Use platform standard codes where applicable.
+  // Standard codes: INTERNAL_ERROR, VALIDATION_ERROR, RESOURCE_UNAVAILABLE,
+  //                 DEPENDENCY_FAILED, RATE_LIMITED_UPSTREAM, TIMEOUT
+  string code = 1;
+
+  // Human-readable message. Safe for display. No internal infrastructure details.
+  string message = 2;
+
+  // Optional additional JSON details (e.g. field-level validation errors, retryable flag).
+  // Example: { "retryable": true, "field": "features.amount" }
+  string details_json = 3;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Control messages
+// ─────────────────────────────────────────────────────────────────────────────
+
+// Bridge → Provider. Best-effort cancellation request.
+// Provider should stop processing the named request and send Terminal(CANCELLED).
+// If already completed, ignore silently.
+message Cancel {
+  string request_id = 1;
+}
+
+// Either side → other. Graceful close signal.
+message Disconnect {
+  // Human-readable reason. Examples: "server_shutdown", "idle_timeout",
+  // "credentials_revoked", "provider_suspended", "version_mismatch"
+  string reason = 1;
+}
+
+// Provider → Bridge. Keep-alive signal.
+// Must be sent every heartbeat_interval_seconds (from Welcome).
+// Missing for 30 consecutive seconds → Bridge closes stream.
+message Heartbeat {
+  int64 ts_unix_ms = 1;
+}
+
+// Bridge → Provider. Warning that the current JWT is about to expire.
+// Provider must:
+//   1. Re-fetch JWT from token endpoint (POST /api/v1/providers/token).
+//   2. Open a new stream with the fresh JWT (do not reuse the current stream).
+//   3. Complete any in-flight requests on the old stream before closing it (best-effort).
+// The Bridge will forcibly close the stream at jwt.exp if no refresh occurs.
+// SDK handles this automatically. Non-SDK providers must implement this manually.
+message RefreshAuthRequired {
+  // Unix milliseconds when the current token expires.
+  int64 current_token_expires_at_unix_ms = 1;
+
+  // Reason for the refresh request.
+  // "token_expiring_soon" — normal expiry warning
+  // "key_rotation"        — platform rotated signing keys; current token still valid until exp
+  string reason = 2;
+}
