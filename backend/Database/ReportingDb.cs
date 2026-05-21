@@ -88,7 +88,9 @@ public sealed class ReportingDb
             await cmd.ExecuteNonQueryAsync(ct);
         }
 
-        // ── pg_notify trigger function + triggers (idempotent) ─────────────────
+        // ── pg_notify trigger function ─────────────────────────────────────────
+        // Tách riêng vì Npgsql bị nhầm khi parse $$ dollar-quoting
+        // trong batch nhiều statement.
 
         await using (var cmd = conn.CreateCommand())
         {
@@ -99,8 +101,16 @@ public sealed class ReportingDb
                     PERFORM pg_notify('reporting_data_changed', TG_TABLE_NAME);
                     RETURN NULL;
                 END;
-                $$;
+                $$
+                """;
+            await cmd.ExecuteNonQueryAsync(ct);
+        }
 
+        // ── Triggers (DROP + CREATE — idempotent) ─────────────────────────────
+
+        await using (var cmd = conn.CreateCommand())
+        {
+            cmd.CommandText = """
                 DROP TRIGGER IF EXISTS trg_sales_notify    ON sales;
                 DROP TRIGGER IF EXISTS trg_products_notify ON products;
                 DROP TRIGGER IF EXISTS trg_regions_notify  ON regions;
