@@ -126,6 +126,14 @@ public sealed class ReportingDb
                 CREATE TRIGGER trg_regions_notify
                     AFTER INSERT OR UPDATE OR DELETE ON regions
                     FOR EACH STATEMENT EXECUTE FUNCTION notify_reporting_change();
+
+                -- Rows arrive here via logical replication APPLY, not local writes.
+                -- Default-mode triggers fire only on origin sessions, so they must be
+                -- ENABLE ALWAYS to fire on replication apply — otherwise pg_notify never
+                -- runs and downstream WidgetStale notifications are never sent.
+                ALTER TABLE sales    ENABLE ALWAYS TRIGGER trg_sales_notify;
+                ALTER TABLE products ENABLE ALWAYS TRIGGER trg_products_notify;
+                ALTER TABLE regions  ENABLE ALWAYS TRIGGER trg_regions_notify;
                 """;
             await cmd.ExecuteNonQueryAsync(ct);
         }
