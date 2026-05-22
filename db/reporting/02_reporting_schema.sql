@@ -62,17 +62,23 @@ DROP TRIGGER IF EXISTS trg_sales_notify    ON sales;
 DROP TRIGGER IF EXISTS trg_products_notify ON products;
 DROP TRIGGER IF EXISTS trg_regions_notify  ON regions;
 
+-- FOR EACH ROW + ENABLE ALWAYS là BẮT BUỘC cho dữ liệu đến qua logical
+-- replication: apply chạy theo từng dòng (không có statement-level event) và
+-- với session_replication_role = 'replica' (chỉ trigger ALWAYS/REPLICA mới fire).
 CREATE TRIGGER trg_sales_notify
     AFTER INSERT OR UPDATE OR DELETE ON sales
-    FOR EACH STATEMENT EXECUTE FUNCTION notify_reporting_change();
+    FOR EACH ROW EXECUTE FUNCTION notify_reporting_change();
+ALTER TABLE sales ENABLE ALWAYS TRIGGER trg_sales_notify;
 
 CREATE TRIGGER trg_products_notify
     AFTER INSERT OR UPDATE OR DELETE ON products
-    FOR EACH STATEMENT EXECUTE FUNCTION notify_reporting_change();
+    FOR EACH ROW EXECUTE FUNCTION notify_reporting_change();
+ALTER TABLE products ENABLE ALWAYS TRIGGER trg_products_notify;
 
 CREATE TRIGGER trg_regions_notify
     AFTER INSERT OR UPDATE OR DELETE ON regions
-    FOR EACH STATEMENT EXECUTE FUNCTION notify_reporting_change();
+    FOR EACH ROW EXECUTE FUNCTION notify_reporting_change();
+ALTER TABLE regions ENABLE ALWAYS TRIGGER trg_regions_notify;
 
 -- Verify:
 -- SELECT tgname, tgrelid::regclass FROM pg_trigger WHERE tgname LIKE 'trg_%_notify';

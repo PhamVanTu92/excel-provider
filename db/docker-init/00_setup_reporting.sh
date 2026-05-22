@@ -116,17 +116,25 @@ psql -v ON_ERROR_STOP=1 -U "$POSTGRES_USER" -d "excel_reporting" --no-password <
     DROP TRIGGER IF EXISTS trg_products_notify ON products;
     DROP TRIGGER IF EXISTS trg_regions_notify  ON regions;
 
+    -- FOR EACH ROW (không phải STATEMENT): logical replication apply chạy theo
+    -- từng dòng, KHÔNG bao giờ kích hoạt trigger mức STATEMENT.
+    -- ENABLE ALWAYS: apply worker chạy với session_replication_role = 'replica',
+    -- nên trigger mặc định (ORIGIN) bị bỏ qua; phải ALWAYS mới fire khi dữ liệu
+    -- đến qua replication. (Listener .NET đã debounce nên không lo spam notify.)
     CREATE TRIGGER trg_sales_notify
         AFTER INSERT OR UPDATE OR DELETE ON sales
-        FOR EACH STATEMENT EXECUTE FUNCTION notify_reporting_change();
+        FOR EACH ROW EXECUTE FUNCTION notify_reporting_change();
+    ALTER TABLE sales ENABLE ALWAYS TRIGGER trg_sales_notify;
 
     CREATE TRIGGER trg_products_notify
         AFTER INSERT OR UPDATE OR DELETE ON products
-        FOR EACH STATEMENT EXECUTE FUNCTION notify_reporting_change();
+        FOR EACH ROW EXECUTE FUNCTION notify_reporting_change();
+    ALTER TABLE products ENABLE ALWAYS TRIGGER trg_products_notify;
 
     CREATE TRIGGER trg_regions_notify
         AFTER INSERT OR UPDATE OR DELETE ON regions
-        FOR EACH STATEMENT EXECUTE FUNCTION notify_reporting_change();
+        FOR EACH ROW EXECUTE FUNCTION notify_reporting_change();
+    ALTER TABLE regions ENABLE ALWAYS TRIGGER trg_regions_notify;
 EOSQL
 
 echo ">>> [reporting-init] Steps 1-5 hoàn tất! Subscription sẽ được tạo bởi excel-reporting-setup service."
