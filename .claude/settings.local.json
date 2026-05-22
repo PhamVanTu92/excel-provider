@@ -1,0 +1,22 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(dotnet build *)",
+      "Bash(git add *)",
+      "Bash(git commit -m ' *)",
+      "Bash(git update-index *)",
+      "Bash(npx tsc *)",
+      "Bash(npm install *)",
+      "Bash(./node_modules/.bin/tsc --noEmit)",
+      "Bash(git push *)",
+      "Bash(git commit -m 'fix: sửa command format postgres trong docker-compose \\(list thay vì folded scalar\\) *)",
+      "Bash(git rm *)",
+      "Bash(git commit -m 'fix: thêm .gitattributes để shell script dùng LF \\(tránh CRLF trên Linux\\) *)",
+      "Bash(git commit -m 'fix: thêm -d flag cho tất cả psql calls trong init script \\(tránh lỗi database not exist\\) *)",
+      "Bash(git commit -m 'fix: tách subscription thành service riêng chạy sau khi postgres healthy *)",
+      "Bash(Move-Item \"E:\\\\Project\\\\excel-provider\\\\db\\\\docker-init\\\\create-subscription.sh\" \"E:\\\\Project\\\\excel-provider\\\\db\\\\scripts\\\\create-subscription.sh\")",
+      "Bash(git commit -m 'fix: chuyển create-subscription.sh ra db/scripts/ để tránh bị postgres initdb chạy *)",
+      "Bash(git commit -m 'fix: tách CREATE FUNCTION ra command riêng để tránh Npgsql lỗi parse dollar-quoting *)"
+    ]
+  }
+}
