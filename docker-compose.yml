@@ -61,7 +61,11 @@ services:
       Provider__TokenEndpoint:         "http://${HDOS_HOST:-host.docker.internal}:5000/api/v1/providers/token"
       Provider__BridgeGrpcUrl:         "http://${HDOS_HOST:-host.docker.internal}:5400"
       Ingestion__BaseUrl:              "http://${HDOS_HOST:-host.docker.internal}:5100"
-      Ingestion__TokenEndpoint:        "http://${HDOS_HOST:-host.docker.internal}:5000/api/v1/providers/token"
+      # Ingestion API validates Keycloak JWTs with scope=ingestion. Fetch the token
+      # from the PUBLIC Keycloak URL so the issuer matches Ingestion's Auth:PublicIssuer.
+      Ingestion__TokenEndpoint:        "${KEYCLOAK_PUBLIC_URL:-https://hdosfoxai.foxai.com.vn}/realms/hdos/protocol/openid-connect/token"
+      Ingestion__ClientId:             "${INGESTION_CLIENT_ID:-hdos-ingestion-client}"
+      Ingestion__ClientSecret:         "${INGESTION_CLIENT_SECRET:-ingestion-secret-dev-2024}"
       # Source DB — read+write (Management API, seeding)
       ConnectionStrings__ExcelDb:      "Host=postgres-excel;Database=excel_provider;Username=excel;Password=excel"
       # Reporting DB — read-only replica (tất cả report handlers)

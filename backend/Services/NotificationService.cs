@@ -4,7 +4,6 @@ using System.Text.Json.Serialization;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 using ReportingPlatform.ExcelProvider.Config;
-using ReportingPlatform.ExcelProvider.Grpc;
 
 namespace ReportingPlatform.ExcelProvider.Services;
 
@@ -12,29 +11,78 @@ namespace ReportingPlatform.ExcelProvider.Services;
 /// Posts a datasource.updated event to the Ingestion API after every Excel write so that
 /// the platform can push WidgetStale notifications to connected frontends.
 ///
-/// Auth note: The Ingestion API requires a JWT with scope "ingestion".  The platform token
-/// obtained via <see cref="TokenService"/> does NOT carry that scope, so the call will
-/// typically return 403.  In that case the service logs a warning and continues gracefully
-/// rather than failing the write operation.  Configure a dedicated Keycloak ingestion
-/// client to enable this feature.
+/// Auth: The Ingestion API validates Keycloak-issued JWTs and requires the claim
+/// scope="ingestion". This service therefore obtains its own token via the Keycloak
+/// client_credentials grant (configured in IngestionOptions) — NOT the platform provider
+/// token used for the gRPC bridge, which has the wrong issuer/audience and is rejected 401.
 /// </summary>
 public sealed class NotificationService
 {
     private readonly IHttpClientFactory _httpFactory;
-    private readonly TokenService       _tokenService;
     private readonly IngestionOptions   _opts;
     private readonly ILogger<NotificationService> _logger;
 
+    private readonly SemaphoreSlim _tokenLock = new(1, 1);
+    private string?        _cachedToken;
+    private DateTimeOffset _tokenExpiresAt;
+
     public NotificationService(
         IHttpClientFactory               httpFactory,
-        TokenService                     tokenService,
         IOptions<IngestionOptions>       opts,
         ILogger<NotificationService>     logger)
     {
         _httpFactory   = httpFactory;
-        _tokenService  = tokenService;
         _opts          = opts.Value;
         _logger        = logger;
+    }
+
+    // ── Keycloak client_credentials token (cached, refreshed 60s before expiry) ──
+    private async Task<string?> GetIngestionTokenAsync(CancellationToken ct)
+    {
+        if (_cachedToken is not null && DateTimeOffset.UtcNow < _tokenExpiresAt)
+            return _cachedToken;
+
+        await _tokenLock.WaitAsync(ct);
+        try
+        {
+            if (_cachedToken is not null && DateTimeOffset.UtcNow < _tokenExpiresAt)
+                return _cachedToken;
+
+            using var http = _httpFactory.CreateClient("ingestion");
+            using var form = new FormUrlEncodedContent(new Dictionary<string, string>
+            {
+                ["grant_type"]    = "client_credentials",
+                ["client_id"]     = _opts.ClientId,
+                ["client_secret"] = _opts.ClientSecret,
+                ["scope"]         = "ingestion",
+            });
+
+            using var resp = await http.PostAsync(_opts.TokenEndpoint, form, ct);
+            if (!resp.IsSuccessStatusCode)
+            {
+                var body = await resp.Content.ReadAsStringAsync(ct);
+                _logger.LogWarning(
+                    "Keycloak token endpoint returned {Status}: {Body}", (int)resp.StatusCode, body);
+                return null;
+            }
+
+            var tok = await resp.Content.ReadFromJsonAsync(
+                IngestionJsonContext.Default.KeycloakTokenResponse, ct);
+            if (tok?.AccessToken is null) return null;
+
+            _cachedToken    = tok.AccessToken;
+            _tokenExpiresAt = DateTimeOffset.UtcNow.AddSeconds(Math.Max(tok.ExpiresIn - 60, 30));
+            return _cachedToken;
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "Failed to obtain Keycloak ingestion token");
+            return null;
+        }
+        finally
+        {
+            _tokenLock.Release();
+        }
     }
 
     /// <summary>
@@ -46,15 +94,10 @@ public sealed class NotificationService
         string[]          affectedOperations,
         CancellationToken ct = default)
     {
-        string token;
-        try
+        var token = await GetIngestionTokenAsync(ct);
+        if (token is null)
         {
-            token = await _tokenService.GetTokenAsync(ct);
-        }
-        catch (Exception ex)
-        {
-            _logger.LogWarning(ex,
-                "Could not obtain bearer token — widget stale notification skipped");
+            _logger.LogWarning("No ingestion token — widget stale notification skipped");
             return;
         }
 
@@ -137,6 +180,16 @@ internal sealed class IngestionEventPayload
     public string[] AffectedOperations { get; set; } = [];
 }
 
+internal sealed class KeycloakTokenResponse
+{
+    [JsonPropertyName("access_token")]
+    public string? AccessToken { get; set; }
+
+    [JsonPropertyName("expires_in")]
+    public int ExpiresIn { get; set; } = 300;
+}
+
 [JsonSerializable(typeof(IngestionEventRequest))]
 [JsonSerializable(typeof(IngestionEventPayload))]
+[JsonSerializable(typeof(KeycloakTokenResponse))]
 internal sealed partial class IngestionJsonContext : JsonSerializerContext { }
