@@ -11,12 +11,12 @@ namespace ReportingPlatform.ExcelProvider.Operations;
 /// </summary>
 public sealed class InventoryStatusHandler : IOperationHandler
 {
-    private readonly ReportingDb _db;
+    private readonly ExcelProviderDb _db;
     private readonly ILogger<InventoryStatusHandler> _logger;
 
     public string OperationPattern => "report.inventory.status";
 
-    public InventoryStatusHandler(ReportingDb db, ILogger<InventoryStatusHandler> logger)
+    public InventoryStatusHandler(ExcelProviderDb db, ILogger<InventoryStatusHandler> logger)
     {
         _db     = db;
         _logger = logger;

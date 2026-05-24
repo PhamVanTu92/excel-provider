@@ -13,12 +13,12 @@ namespace ReportingPlatform.ExcelProvider.Operations;
 /// </summary>
 public sealed class TopPerformersHandler : IOperationHandler
 {
-    private readonly ReportingDb _db;
+    private readonly ExcelProviderDb _db;
     private readonly ILogger<TopPerformersHandler> _logger;
 
     public string OperationPattern => "report.top.performers";
 
-    public TopPerformersHandler(ReportingDb db, ILogger<TopPerformersHandler> logger)
+    public TopPerformersHandler(ExcelProviderDb db, ILogger<TopPerformersHandler> logger)
     {
         _db     = db;
         _logger = logger;

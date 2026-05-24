@@ -12,12 +12,12 @@ namespace ReportingPlatform.ExcelProvider.Operations;
 /// </summary>
 public sealed class ChannelComparisonHandler : IOperationHandler
 {
-    private readonly ReportingDb _db;
+    private readonly ExcelProviderDb _db;
     private readonly ILogger<ChannelComparisonHandler> _logger;
 
     public string OperationPattern => "report.channel.comparison";
 
-    public ChannelComparisonHandler(ReportingDb db, ILogger<ChannelComparisonHandler> logger)
+    public ChannelComparisonHandler(ExcelProviderDb db, ILogger<ChannelComparisonHandler> logger)
     {
         _db     = db;
         _logger = logger;

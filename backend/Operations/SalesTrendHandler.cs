@@ -12,12 +12,12 @@ namespace ReportingPlatform.ExcelProvider.Operations;
 /// </summary>
 public sealed class SalesTrendHandler : IOperationHandler
 {
-    private readonly ReportingDb _db;
+    private readonly ExcelProviderDb _db;
     private readonly ILogger<SalesTrendHandler> _logger;
 
     public string OperationPattern => "report.sales.trend";
 
-    public SalesTrendHandler(ReportingDb db, ILogger<SalesTrendHandler> logger)
+    public SalesTrendHandler(ExcelProviderDb db, ILogger<SalesTrendHandler> logger)
     {
         _db     = db;
         _logger = logger;

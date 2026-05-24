@@ -12,12 +12,12 @@ namespace ReportingPlatform.ExcelProvider.Operations;
 /// </summary>
 public sealed class ProductDetailHandler : IOperationHandler
 {
-    private readonly ReportingDb _db;
+    private readonly ExcelProviderDb _db;
     private readonly ILogger<ProductDetailHandler> _logger;
 
     public string OperationPattern => "report.product.detail";
 
-    public ProductDetailHandler(ReportingDb db, ILogger<ProductDetailHandler> logger)
+    public ProductDetailHandler(ExcelProviderDb db, ILogger<ProductDetailHandler> logger)
     {
         _db     = db;
         _logger = logger;
