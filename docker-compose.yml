@@ -3,11 +3,16 @@
 #
 # Yêu cầu:
 #   • HDOS platform đang chạy (provider-bridge:5400, request-api:5000, ingestion-api:5100)
-#   • V009 migration đã chạy vào HDOS DB (db/V009__excel_provider_seed.sql)
+#   • Provider đã được đăng ký trong HDOS Admin (hoặc V009 migration đã seed)
 #
 # Lần đầu:
-#   1. cp .env.example .env  →  điền HDOS_HOST
+#   1. cp .env.example .env  →  điền HDOS_HOST + HDOS_BOOTSTRAP_TOKEN
 #   2. docker compose up -d --build
+#
+# Xác thực provider (chọn 1 trong 2 cách):
+#   A. Bootstrap (khuyến nghị): để HDOS_BOOTSTRAP_TOKEN từ Admin UI → Credentials tab
+#      → Provider tự fetch ClientSecret khi khởi động; không cần hardcode secret
+#   B. Direct secret: để EXCEL_PROVIDER_SECRET=<secret> (bỏ trống HDOS_BOOTSTRAP_TOKEN)
 #
 # Port map:
 #   5434 → postgres-excel       (DB riêng — excel_provider + excel_reporting)
@@ -57,7 +62,10 @@ services:
       DOTNET_ENVIRONMENT:              Development
       ASPNETCORE_URLS:                 http://+:5600
       Provider__ClientId:              excel-provider
-      Provider__ClientSecret:          "${EXCEL_PROVIDER_SECRET:-excel-secret-dev-2024}"
+      # Cách A — Bootstrap (để trống ClientSecret, điền BootstrapToken từ HDOS Admin UI)
+      Provider__ClientSecret:          "${EXCEL_PROVIDER_SECRET:-}"
+      Provider__BootstrapUrl:          "http://${HDOS_HOST:-host.docker.internal}:5000"
+      Provider__BootstrapToken:        "${HDOS_BOOTSTRAP_TOKEN:-}"
       Provider__TokenEndpoint:         "http://${HDOS_HOST:-host.docker.internal}:5000/api/v1/providers/token"
       Provider__BridgeGrpcUrl:         "http://${HDOS_HOST:-host.docker.internal}:5400"
       Ingestion__BaseUrl:              "http://${HDOS_HOST:-host.docker.internal}:5100"

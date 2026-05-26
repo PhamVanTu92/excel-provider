@@ -30,7 +30,10 @@ public sealed class ProviderOptions
     /// <summary>Client ID used for platform token endpoint (client_credentials grant).</summary>
     public string ClientId { get; set; } = "excel-provider";
 
-    /// <summary>Client secret (plain-text; hashed when stored in provider_registry).</summary>
+    /// <summary>
+    /// Client secret (plain-text). Can be left empty when BootstrapToken is set —
+    /// in that case the secret is fetched from HDOS at startup via the bootstrap API.
+    /// </summary>
     public string ClientSecret { get; set; } = string.Empty;
 
     /// <summary>URL of the platform token endpoint, e.g. http://request-api:5000/api/v1/providers/token</summary>
@@ -44,4 +47,19 @@ public sealed class ProviderOptions
 
     /// <summary>Semver of this provider.</summary>
     public string Version { get; set; } = "1.0.0";
+
+    // ── Bootstrap (alternative to hardcoding ClientSecret) ────────────────────
+
+    /// <summary>
+    /// Base URL of HDOS (e.g. http://192.168.100.62:5000).
+    /// Used with BootstrapToken to fetch ClientSecret on startup.
+    /// </summary>
+    public string BootstrapUrl { get; set; } = string.Empty;
+
+    /// <summary>
+    /// One-time bootstrap token issued by HDOS Admin → Credentials tab.
+    /// If set (and ClientSecret is empty), the provider calls
+    /// POST {BootstrapUrl}/api/v1/providers/bootstrap to receive its ClientSecret.
+    /// </summary>
+    public string BootstrapToken { get; set; } = string.Empty;
 }
