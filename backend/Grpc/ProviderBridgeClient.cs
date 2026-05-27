@@ -17,6 +17,7 @@ public sealed class ProviderBridgeClient : BackgroundService
 {
     private static readonly string[] SupportedOperations =
     [
+        // ── Original 7 business operations ───────────────────────────────────
         "report.dashboard.summary",
         "report.sales.trend",
         "report.inventory.status",
@@ -24,6 +25,24 @@ public sealed class ProviderBridgeClient : BackgroundService
         "report.channel.comparison",
         "report.product.detail",
         "report.top.performers",
+
+        // ── Extended business chart types ─────────────────────────────────────
+        "report.sales.gauge",
+        "report.sales.heatmap",
+        "report.sales.scatter",
+        "report.sales.funnel",
+        "report.sales.timeline",
+        "report.sales.alerts",
+        "report.sales.pivot",
+
+        // ── Healthcare / operations-center demo ───────────────────────────────
+        "report.demo.patient.flow",
+        "report.demo.bed.status",
+        "report.demo.room.status",
+        "report.demo.risk.tiers",
+        "report.demo.flow.steps",
+        "report.demo.news2",
+        "report.demo.map.pins",
     ];
 
     // Exponential backoff steps in milliseconds (5s → 15s → 30s → 60s → 120s)

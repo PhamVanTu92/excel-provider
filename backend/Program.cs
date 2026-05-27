@@ -44,6 +44,8 @@ builder.Services.AddHttpClient("ingestion", client =>
 });
 
 // ── Operation handlers ────────────────────────────────────────────────────────
+
+// Original 7 business operations
 builder.Services.AddSingleton<IOperationHandler, DashboardSummaryHandler>();
 builder.Services.AddSingleton<IOperationHandler, SalesTrendHandler>();
 builder.Services.AddSingleton<IOperationHandler, InventoryStatusHandler>();
@@ -51,6 +53,24 @@ builder.Services.AddSingleton<IOperationHandler, RegionalPerformanceHandler>();
 builder.Services.AddSingleton<IOperationHandler, ChannelComparisonHandler>();
 builder.Services.AddSingleton<IOperationHandler, ProductDetailHandler>();
 builder.Services.AddSingleton<IOperationHandler, TopPerformersHandler>();
+
+// Extended business chart types
+builder.Services.AddSingleton<IOperationHandler, SalesGaugeHandler>();
+builder.Services.AddSingleton<IOperationHandler, SalesHeatmapHandler>();
+builder.Services.AddSingleton<IOperationHandler, SalesScatterHandler>();
+builder.Services.AddSingleton<IOperationHandler, SalesFunnelHandler>();
+builder.Services.AddSingleton<IOperationHandler, SalesTimelineHandler>();
+builder.Services.AddSingleton<IOperationHandler, SalesAlertsHandler>();
+builder.Services.AddSingleton<IOperationHandler, SalesPivotHandler>();
+
+// Healthcare / operations-center demo
+builder.Services.AddSingleton<IOperationHandler, DemoPatientFlowHandler>();
+builder.Services.AddSingleton<IOperationHandler, DemoBedStatusHandler>();
+builder.Services.AddSingleton<IOperationHandler, DemoRoomStatusHandler>();
+builder.Services.AddSingleton<IOperationHandler, DemoRiskTiersHandler>();
+builder.Services.AddSingleton<IOperationHandler, DemoFlowStepsHandler>();
+builder.Services.AddSingleton<IOperationHandler, DemoNews2BarsHandler>();
+builder.Services.AddSingleton<IOperationHandler, DemoMapPinsHandler>();
 
 // ── Dispatcher ────────────────────────────────────────────────────────────────
 builder.Services.AddSingleton<OperationDispatcher>();
