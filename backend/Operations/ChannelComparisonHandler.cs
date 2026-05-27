@@ -1,5 +1,5 @@
-using System.Diagnostics;
 using System.Text.Json;
+using System.Text.Json.Nodes;
 using Microsoft.Extensions.Logging;
 using ReportingPlatform.ExcelProvider.Database;
 using ReportingPlatform.Provider.V1;
@@ -8,7 +8,8 @@ namespace ReportingPlatform.ExcelProvider.Operations;
 
 /// <summary>
 /// Handler for <c>report.channel.comparison</c>.
-/// Compares Online vs Store channel performance for a given date range.
+/// Returns a <c>pie_chart</c> payload comparing Online vs Cửa hàng revenue.
+/// Parameter: period = today | week | month (default: month).
 /// </summary>
 public sealed class ChannelComparisonHandler : IOperationHandler
 {
@@ -28,86 +29,54 @@ public sealed class ChannelComparisonHandler : IOperationHandler
         Func<int, string, Task> reportProgress,
         CancellationToken ct)
     {
-        var sw = Stopwatch.StartNew();
-        _logger.LogInformation("ChannelComparison starting — requestId={RequestId}", request.RequestId);
-
         await reportProgress(10, "Parsing parameters…");
 
-        using var doc = JsonDocument.Parse(request.ParamsJson ?? "{}");
-        var root      = doc.RootElement;
-        var fromDate  = DateOnly.Parse(root.GetProperty("fromDate").GetString()!);
-        var toDate    = DateOnly.Parse(root.GetProperty("toDate").GetString()!);
-
-        _logger.LogInformation("ChannelComparison from={From} to={To}", fromDate, toDate);
-
-        await reportProgress(30, $"Querying sales from {fromDate} to {toDate}…");
-        var rows = await _db.GetSalesByDateRangeAsync(fromDate, toDate, ct);
-
-        await reportProgress(50, "Aggregating channel totals…");
-
-        // ── Aggregation ────────────────────────────────────────────────────────
-
-        decimal onlineRevenue = rows.Where(r => r.Channel == "Online").Sum(r => r.Revenue);
-        int     onlineUnits   = rows.Where(r => r.Channel == "Online").Sum(r => r.Units);
-        decimal storeRevenue  = rows.Where(r => r.Channel == "Store").Sum(r => r.Revenue);
-        int     storeUnits    = rows.Where(r => r.Channel == "Store").Sum(r => r.Units);
-
-        decimal totalRevenue = onlineRevenue + storeRevenue;
-        double  onlinePct    = totalRevenue == 0 ? 0 : Math.Round((double)(onlineRevenue / totalRevenue * 100), 1);
-        double  storePct     = totalRevenue == 0 ? 0 : Math.Round((double)(storeRevenue  / totalRevenue * 100), 1);
-
-        await reportProgress(65, "Building daily trend series…");
-
-        // ── Daily trend ────────────────────────────────────────────────────────
-
-        var labels       = new List<string>();
-        var onlineSeries = new List<decimal>();
-        var storeSeries  = new List<decimal>();
-
-        // Pre-index revenue by (date, channel) for O(n) lookup
-        var byDateChannel = rows
-            .GroupBy(r => (r.Date, r.Channel))
-            .ToDictionary(g => g.Key, g => g.Sum(r => r.Revenue));
-
-        for (var d = fromDate; d <= toDate; d = d.AddDays(1))
+        var period = "month";
+        if (!string.IsNullOrWhiteSpace(request.ParamsJson))
         {
-            labels.Add(d.ToString("yyyy-MM-dd"));
+            try
+            {
+                using var doc = JsonDocument.Parse(request.ParamsJson);
+                var root = doc.RootElement;
 
-            byDateChannel.TryGetValue((d, "Online"), out var oRev);
-            byDateChannel.TryGetValue((d, "Store"),  out var sRev);
-            onlineSeries.Add(Math.Round(oRev, 2));
-            storeSeries.Add(Math.Round(sRev, 2));
+                // Accept period (today/week/month) or explicit date range
+                if (root.TryGetProperty("period", out var pp)
+                    && !string.IsNullOrWhiteSpace(pp.GetString()))
+                    period = pp.GetString()!;
+            }
+            catch { /* keep default */ }
         }
 
-        await reportProgress(90, "Building response…");
-
-        var result = new
+        var today = DateOnly.FromDateTime(DateTime.Today);
+        (DateOnly from, DateOnly to) = period switch
         {
-            online = new
-            {
-                revenue    = Math.Round(onlineRevenue, 2),
-                units      = onlineUnits,
-                percentage = onlinePct,
-            },
-            store = new
-            {
-                revenue    = Math.Round(storeRevenue, 2),
-                units      = storeUnits,
-                percentage = storePct,
-            },
-            trend = new
-            {
-                labels,
-                online = onlineSeries,
-                store  = storeSeries,
-            },
+            "today" => (today, today),
+            "week"  => (today.AddDays(-6), today),
+            _       => (today.AddDays(-29), today),  // "month" = last 30 days
         };
 
-        sw.Stop();
-        _logger.LogInformation(
-            "ChannelComparison complete — elapsed={Elapsed}ms, rows={Rows}",
-            sw.ElapsedMilliseconds, rows.Count);
+        _logger.LogInformation("ChannelComparison period={Period} [{From},{To}]", period, from, to);
 
-        return JsonSerializer.Serialize(result);
+        await reportProgress(35, "Querying sales…");
+        var rows = await _db.GetSalesByDateRangeAsync(from, to, ct);
+
+        await reportProgress(75, "Building pie_chart…");
+
+        decimal online = Math.Round(rows.Where(r => r.Channel == "Online").Sum(r => r.Revenue), 2);
+        decimal store  = Math.Round(rows.Where(r => r.Channel == "Store").Sum(r => r.Revenue), 2);
+        decimal total  = online + store;
+
+        var result = new JsonObject
+        {
+            ["slices"] = new JsonArray
+            {
+                new JsonObject { ["label"] = "Online",     ["value"] = (double)online, ["color"] = (JsonNode?)null },
+                new JsonObject { ["label"] = "Cửa hàng",  ["value"] = (double)store,  ["color"] = (JsonNode?)null },
+            },
+            ["total"]       = (double)total,
+            ["valueFormat"] = "currency:VND",
+        };
+
+        return result.ToJsonString();
     }
 }

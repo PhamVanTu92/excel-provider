@@ -1,5 +1,5 @@
-using System.Diagnostics;
 using System.Text.Json;
+using System.Text.Json.Nodes;
 using Microsoft.Extensions.Logging;
 using ReportingPlatform.ExcelProvider.Database;
 using ReportingPlatform.Provider.V1;
@@ -8,8 +8,9 @@ namespace ReportingPlatform.ExcelProvider.Operations;
 
 /// <summary>
 /// Handler for <c>report.top.performers</c>.
-/// Returns top-5 products and regions by revenue for a given period,
-/// with growth% compared to the equivalent prior period.
+/// Returns a <c>simple_table</c> payload with top-5 products by revenue
+/// and their growth rate versus the equivalent prior period.
+/// Parameter: period = week | month | quarter (default: month).
 /// </summary>
 public sealed class TopPerformersHandler : IOperationHandler
 {
@@ -29,124 +30,120 @@ public sealed class TopPerformersHandler : IOperationHandler
         Func<int, string, Task> reportProgress,
         CancellationToken ct)
     {
-        var sw = Stopwatch.StartNew();
-        _logger.LogInformation("TopPerformers starting — requestId={RequestId}", request.RequestId);
-
         await reportProgress(10, "Parsing parameters…");
 
-        using var doc = JsonDocument.Parse(request.ParamsJson ?? "{}");
-        var root      = doc.RootElement;
-        var period    = root.TryGetProperty("period", out var periodProp)
-                        ? (periodProp.GetString() ?? "week")
-                        : "week";
+        var period = "month";
+        int limit  = 10;
 
-        // ── Resolve date ranges ────────────────────────────────────────────────
+        if (!string.IsNullOrWhiteSpace(request.ParamsJson))
+        {
+            try
+            {
+                using var doc = JsonDocument.Parse(request.ParamsJson);
+                var root = doc.RootElement;
+
+                if (root.TryGetProperty("period", out var pp)
+                    && !string.IsNullOrWhiteSpace(pp.GetString()))
+                    period = pp.GetString()!;
+
+                if (root.TryGetProperty("limit", out var lp)
+                    && lp.TryGetInt32(out var lv) && lv > 0)
+                    limit = Math.Min(lv, 50);
+            }
+            catch { /* keep defaults */ }
+        }
 
         int days = period switch
         {
-            "month"   => 30,
             "quarter" => 90,
-            _         => 7,    // "week" is default
+            "week"    => 7,
+            _         => 30,    // "month"
         };
 
         var today       = DateOnly.FromDateTime(DateTime.Today);
         var currentFrom = today.AddDays(-(days - 1));
-        var currentTo   = today;
         var prevTo      = currentFrom.AddDays(-1);
         var prevFrom    = prevTo.AddDays(-(days - 1));
 
         _logger.LogInformation(
-            "TopPerformers period={Period} current=[{CFrom},{CTo}] previous=[{PFrom},{PTo}]",
-            period, currentFrom, currentTo, prevFrom, prevTo);
+            "TopPerformers period={Period} current=[{CF},{CT}] prev=[{PF},{PT}]",
+            period, currentFrom, today, prevFrom, prevTo);
 
-        await reportProgress(30, "Querying current period sales…");
-        var currentRows  = await _db.GetSalesByDateRangeAsync(currentFrom, currentTo, ct);
+        await reportProgress(30, "Querying current period…");
+        var currentRows = await _db.GetSalesByDateRangeAsync(currentFrom, today, ct);
 
-        await reportProgress(50, "Querying previous period sales…");
-        var previousRows = await _db.GetSalesByDateRangeAsync(prevFrom, prevTo, ct);
+        await reportProgress(55, "Querying previous period…");
+        var prevRows = await _db.GetSalesByDateRangeAsync(prevFrom, prevTo, ct);
 
-        await reportProgress(70, "Ranking products and regions…");
+        await reportProgress(80, "Ranking top products…");
 
-        // ── Top products ───────────────────────────────────────────────────────
-
-        var currentByProduct  = currentRows
+        var prevByProduct = prevRows
             .GroupBy(r => r.Product)
             .ToDictionary(g => g.Key, g => g.Sum(r => r.Revenue));
 
-        var previousByProduct = previousRows
+        var top = currentRows
             .GroupBy(r => r.Product)
-            .ToDictionary(g => g.Key, g => g.Sum(r => r.Revenue));
-
-        var topProducts = currentByProduct
-            .OrderByDescending(kv => kv.Value)
-            .Take(5)
-            .Select((kv, idx) =>
+            .Select(g =>
             {
-                previousByProduct.TryGetValue(kv.Key, out var prev);
-                var growth = ComputeGrowth(kv.Value, prev);
-                return new
-                {
-                    rank    = idx + 1,
-                    name    = kv.Key,
-                    revenue = Math.Round(kv.Value, 2),
-                    growth,
-                };
+                decimal rev  = g.Sum(r => r.Revenue);
+                int     units= g.Sum(r => r.Units);
+                prevByProduct.TryGetValue(g.Key, out var prev);
+                double growth = prev == 0m ? 0.0
+                    : Math.Round((double)((rev - prev) / prev * 100), 1);
+
+                return (Product: g.Key, Revenue: rev, Units: units, Growth: growth);
             })
+            .OrderByDescending(x => x.Revenue)
+            .Take(limit)
             .ToList();
 
-        // ── Top regions ────────────────────────────────────────────────────────
-
-        var currentByRegion  = currentRows
-            .GroupBy(r => r.Region)
-            .ToDictionary(g => g.Key, g => g.Sum(r => r.Revenue));
-
-        var previousByRegion = previousRows
-            .GroupBy(r => r.Region)
-            .ToDictionary(g => g.Key, g => g.Sum(r => r.Revenue));
-
-        var topRegions = currentByRegion
-            .OrderByDescending(kv => kv.Value)
-            .Take(5)
-            .Select((kv, idx) =>
-            {
-                previousByRegion.TryGetValue(kv.Key, out var prev);
-                var growth = ComputeGrowth(kv.Value, prev);
-                return new
-                {
-                    rank    = idx + 1,
-                    name    = kv.Key,
-                    revenue = Math.Round(kv.Value, 2),
-                    growth,
-                };
-            })
-            .ToList();
-
-        await reportProgress(90, "Building response…");
-
-        var result = new
+        var dataRows = new JsonArray();
+        for (int i = 0; i < top.Count; i++)
         {
-            topProducts,
-            topRegions,
-            period,
+            var row = top[i];
+            dataRows.Add(new JsonObject
+            {
+                ["rank"]    = i + 1,
+                ["product"] = row.Product,
+                ["revenue"] = (double)Math.Round(row.Revenue, 2),
+                ["units"]   = row.Units,
+                ["growth"]  = row.Growth,
+            });
+        }
+
+        var result = new JsonObject
+        {
+            ["columns"] = new JsonArray
+            {
+                Col("rank",    "#",          "number", null,           align: "center", sortable: false),
+                Col("product", "Sản phẩm",   "string", null,           align: "left"),
+                Col("revenue", "Doanh thu",  "number", "currency:VND", align: "right"),
+                Col("units",   "Số lượng",   "number", null,           align: "right"),
+                Col("growth",  "Tăng trưởng","number", "percent:1",    align: "right"),
+            },
+            ["rows"]       = dataRows,
+            ["pagination"] = new JsonObject
+            {
+                ["mode"]      = "client",
+                ["totalRows"] = top.Count,
+            },
         };
 
-        sw.Stop();
-        _logger.LogInformation(
-            "TopPerformers complete — elapsed={Elapsed}ms, currentRows={Rows}",
-            sw.ElapsedMilliseconds, currentRows.Count);
-
-        return JsonSerializer.Serialize(result);
+        return result.ToJsonString();
     }
 
-    // ─── Helpers ──────────────────────────────────────────────────────────────
+    // ── Helper ─────────────────────────────────────────────────────────────────
 
-    /// <summary>
-    /// Growth = (current - previous) / previous * 100, rounded to 1 decimal place.
-    /// Returns 0.0 when previous is zero (no prior baseline).
-    /// </summary>
-    private static double ComputeGrowth(decimal current, decimal previous)
+    private static JsonObject Col(string key, string label, string type,
+        string? format, string align = "left", bool sortable = true) => new()
     {
-        if (previous == 0m) return 0.0;
-        return Math.Round((double)((current - previous) / previous * 100), 1);
-    }
+        ["key"]        = key,
+        ["label"]      = label,
+        ["type"]       = type,
+        ["sortable"]   = sortable,
+        ["filterable"] = false,
+        ["format"]     = format,
+        ["visible"]    = true,
+        ["align"]      = align,
+    };
 }

@@ -1,4 +1,5 @@
 using System.Text.Json;
+using System.Text.Json.Nodes;
 using Microsoft.Extensions.Logging;
 using ReportingPlatform.ExcelProvider.Database;
 using ReportingPlatform.Provider.V1;
@@ -7,7 +8,8 @@ namespace ReportingPlatform.ExcelProvider.Operations;
 
 /// <summary>
 /// Handler for <c>report.regional.performance</c>.
-/// Aggregates sales by region for a given period (today / week / month) and compares against targets.
+/// Returns a <c>bar_chart</c> payload with two series: Thực tế (actual) vs Mục tiêu (target).
+/// Parameter: period = today | week | month (default: month).
 /// </summary>
 public sealed class RegionalPerformanceHandler : IOperationHandler
 {
@@ -29,88 +31,97 @@ public sealed class RegionalPerformanceHandler : IOperationHandler
     {
         await reportProgress(10, "Parsing parameters…");
 
-        using var doc = JsonDocument.Parse(request.ParamsJson ?? """{"period":"today"}""");
-        var period    = doc.RootElement.GetProperty("period").GetString() ?? "today";
-
-        _logger.LogInformation("RegionalPerformance period={Period}", period);
+        var period = "month";
+        if (!string.IsNullOrWhiteSpace(request.ParamsJson))
+        {
+            try
+            {
+                using var doc = JsonDocument.Parse(request.ParamsJson);
+                if (doc.RootElement.TryGetProperty("period", out var pp)
+                    && !string.IsNullOrWhiteSpace(pp.GetString()))
+                    period = pp.GetString()!;
+            }
+            catch { /* keep default */ }
+        }
 
         var today = DateOnly.FromDateTime(DateTime.Today);
-        (DateOnly From, DateOnly To) range = period switch
+        (DateOnly from, DateOnly to) = period switch
         {
-            "week"  => (today.AddDays(-(int)today.DayOfWeek + 1), today),   // Mon–today (ISO)
-            "month" => (new DateOnly(today.Year, today.Month, 1), today),
-            _       => (today, today), // "today"
+            "today" => (today, today),
+            "week"  => (today.AddDays(-(int)today.DayOfWeek + 1), today),
+            _       => (today.AddDays(-29), today),   // "month" = last 30 days
         };
 
-        await reportProgress(30, $"Querying sales for period {range.From} – {range.To}…");
-        var sales   = await _db.GetSalesByDateRangeAsync(range.From, range.To, ct);
+        _logger.LogInformation("RegionalPerformance period={Period} [{From},{To}]", period, from, to);
 
-        await reportProgress(50, "Querying region targets…");
+        await reportProgress(30, "Querying sales…");
+        var sales = await _db.GetSalesByDateRangeAsync(from, to, ct);
+
+        await reportProgress(55, "Querying region targets…");
         var regions = await _db.GetRegionsAsync(ct);
 
-        await reportProgress(70, "Aggregating by region…");
+        await reportProgress(75, "Building bar_chart…");
 
-        // Calculate target for the period (scale MonthlyTarget)
-        int periodDays   = (range.To.ToDateTime(TimeOnly.MinValue) - range.From.ToDateTime(TimeOnly.MinValue)).Days + 1;
-        double monthFrac = periodDays / 30.0;
+        int    periodDays  = to.DayNumber - from.DayNumber + 1;
+        double monthFrac   = periodDays / 30.0;
 
-        var regionMap = regions.ToDictionary(r => r.Name, StringComparer.OrdinalIgnoreCase);
-
-        var regionGroups = sales
+        // Revenue by region (actual)
+        var revenueByRegion = sales
             .GroupBy(r => r.Region)
-            .Select(g =>
-            {
-                decimal revenue = g.Sum(r => r.Revenue);
-                int     units   = g.Sum(r => r.Units);
+            .ToDictionary(g => g.Key, g => Math.Round(g.Sum(r => r.Revenue), 2));
 
-                decimal target = regionMap.TryGetValue(g.Key, out var ri)
-                    ? Math.Round(ri.MonthlyTarget * (decimal)monthFrac, 2)
-                    : 50_000m;
-
-                double achievementPct = target > 0
-                    ? Math.Round((double)revenue / (double)target * 100, 1)
-                    : 0;
-
-                return new
-                {
-                    name           = g.Key,
-                    revenue        = Math.Round(revenue, 2),
-                    units,
-                    target,
-                    achievementPct,
-                };
-            })
-            .OrderByDescending(r => r.revenue)
+        // Ordered by region name for a stable axis
+        var regionNames = regions
+            .Select(r => r.Name)
+            .OrderBy(n => n)
             .ToList();
 
-        // Ensure all regions appear even if they have no sales in the period
-        var presentRegions = regionGroups.Select(r => r.name).ToHashSet(StringComparer.OrdinalIgnoreCase);
-        var zeroRegions = regions
-            .Where(r => !presentRegions.Contains(r.Name))
-            .Select(r =>
-            {
-                decimal target = Math.Round(r.MonthlyTarget * (decimal)monthFrac, 2);
-                return new
-                {
-                    name           = r.Name,
-                    revenue        = 0m,
-                    units          = 0,
-                    target,
-                    achievementPct = 0.0,
-                };
-            })
-            .ToList();
+        // Add any sales-only regions not in the regions table
+        foreach (var extra in revenueByRegion.Keys.Where(k => !regionNames.Contains(k)))
+            regionNames.Add(extra);
 
-        await reportProgress(90, "Building response…");
+        var regionLookup = regions.ToDictionary(r => r.Name, StringComparer.OrdinalIgnoreCase);
 
-        var result = new
+        var actualData = new JsonArray();
+        var targetData = new JsonArray();
+
+        foreach (var name in regionNames)
         {
-            regions = regionGroups
-                .Cast<object>()
-                .Concat(zeroRegions)
-                .ToList()
+            decimal actual = revenueByRegion.TryGetValue(name, out var rev) ? rev : 0m;
+
+            decimal target = regionLookup.TryGetValue(name, out var ri)
+                ? Math.Round(ri.MonthlyTarget * (decimal)monthFrac, 2)
+                : Math.Round(50_000m * (decimal)monthFrac, 2);
+
+            actualData.Add(new JsonObject { ["x"] = name, ["y"] = (double)actual });
+            targetData.Add(new JsonObject { ["x"] = name, ["y"] = (double)target });
+        }
+
+        var result = new JsonObject
+        {
+            ["series"] = new JsonArray
+            {
+                new JsonObject { ["name"] = "Thực tế", ["data"] = actualData },
+                new JsonObject { ["name"] = "Mục tiêu", ["data"] = targetData },
+            },
+            ["axes"] = new JsonObject
+            {
+                ["x"] = new JsonObject
+                {
+                    ["type"]  = "category",
+                    ["label"] = "Khu vực",
+                },
+                ["y"] = new JsonObject
+                {
+                    ["type"]   = "number",
+                    ["label"]  = "Doanh thu (VND)",
+                    ["format"] = "currency:VND",
+                },
+                ["y2"] = (JsonNode?)null,
+            },
+            ["annotations"] = new JsonArray(),
         };
 
-        return JsonSerializer.Serialize(result);
+        return result.ToJsonString();
     }
 }
