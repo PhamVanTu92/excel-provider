@@ -62,21 +62,34 @@ Tài liệu này mô tả toàn bộ kiến trúc, cách tích hợp với HDOS 
 
 ## 3. Đăng ký với HDOS (Provider Registration)
 
-Excel Provider đăng ký với HDOS bằng **platform token** (client_credentials):
+Excel Provider xác thực với HDOS bằng **platform token** (client_credentials grant).
+
+### Credentials
+
+| Field | Giá trị |
+|---|---|
+| Client ID | `excel-provider` |
+| Client Secret | Quản lý qua **HDOS Admin UI** — không hardcode trong `.env` |
+
+Credentials được lưu trong **HDOS database** (`provider_registry`), quản lý qua:
+→ **HDOS Admin UI → chọn `excel-provider` → tab Credentials**
+
+### Cơ chế Bootstrap (khuyến nghị)
+
+Thay vì hardcode `ClientSecret` trong `.env`, provider dùng **Bootstrap Token** để tự fetch secret khi khởi động:
 
 ```
-Client ID:     excel-provider
-Client Secret: excel-secret-dev-2024   (bcrypt-hashed trong HDOS DB)
+1. Admin tạo Bootstrap Token   →  HDOS Admin UI → Credentials → "Tạo Bootstrap Token"
+2. Điền token vào .env         →  HDOS_BOOTSTRAP_TOKEN=<token>
+3. Provider khởi động          →  gọi POST /api/v1/providers/bootstrap
+4. Nhận ClientSecret           →  kết nối Provider Bridge
 ```
 
-Credentials được seed vào **HDOS database** (không phải postgres-excel) qua file:
-→ `db/V009__excel_provider_seed.sql`
+**Lợi ích**: Secret không bao giờ xuất hiện trong `.env`, Git history, hay CI logs.
 
-File này seed 2 bảng trong HDOS DB:
-- `provider_registry` — đăng ký excel-provider với 7 operations
-- `operation_registry` — schema params/payload cho từng operation
+### Khi start
 
-**Khi start**, Excel Provider gửi `Hello` message qua gRPC → Provider Bridge xác thực → bắt đầu nhận `OperationRequest` stream.
+Excel Provider gửi `Hello` message qua gRPC → Provider Bridge xác thực → bắt đầu nhận `OperationRequest` stream.
 
 ---
 
@@ -153,15 +166,22 @@ Mỗi operation được implement trong `backend/Operations/<Name>Handler.cs`, 
 
 ### excel-provider (backend)
 
-| Biến | Mô tả | Default |
+| Biến | Mô tả | Bắt buộc |
 |---|---|---|
-| `Provider__ClientId` | Client ID đăng ký với HDOS | `excel-provider` |
-| `Provider__ClientSecret` | Client secret (plain-text) | `excel-secret-dev-2024` |
-| `Provider__TokenEndpoint` | URL lấy platform token | `http://{HDOS_HOST}:5000/api/v1/providers/token` |
-| `Provider__BridgeGrpcUrl` | URL của Provider Bridge gRPC | `http://{HDOS_HOST}:5400` |
-| `Ingestion__BaseUrl` | URL Ingestion API để push events | `http://{HDOS_HOST}:5100` |
-| `Ingestion__TokenEndpoint` | URL lấy token cho Ingestion | `http://{HDOS_HOST}:5000/api/v1/providers/token` |
-| `ConnectionStrings__ExcelDb` | Connection string postgres-excel | `Host=postgres-excel;...` |
+| `HDOS_HOST` | IP/hostname của HDOS server (trong `.env`) | ✅ |
+| `HDOS_BOOTSTRAP_TOKEN` | Bootstrap token lấy từ HDOS Admin UI → Credentials | ✅ (hoặc dùng cách B) |
+| `EXCEL_PROVIDER_SECRET` | Dùng thay Bootstrap nếu muốn hardcode secret trực tiếp | ⬜ (cách B) |
+| `Provider__ClientId` | Client ID đăng ký với HDOS | mặc định `excel-provider` |
+| `Provider__ClientSecret` | Secret (plain-text). **Để trống** khi dùng Bootstrap Token | mặc định rỗng |
+| `Provider__BootstrapUrl` | Base URL của HDOS để gọi bootstrap API | auto từ `HDOS_HOST` |
+| `Provider__BootstrapToken` | Bootstrap token. Auto từ `HDOS_BOOTSTRAP_TOKEN` | auto từ env |
+| `Provider__TokenEndpoint` | URL lấy platform token | auto từ `HDOS_HOST` |
+| `Provider__BridgeGrpcUrl` | URL của Provider Bridge gRPC | auto từ `HDOS_HOST` |
+| `Ingestion__BaseUrl` | URL Ingestion API để push events | auto từ `HDOS_HOST` |
+| `ConnectionStrings__ExcelDb` | Connection string postgres-excel | mặc định trong compose |
+
+> **Ghi chú**: Tất cả URL tự động được tạo từ `HDOS_HOST` trong `docker-compose.yml`.  
+> Chỉ cần set `HDOS_HOST` + `HDOS_BOOTSTRAP_TOKEN` trong `.env` là đủ.
 
 ### excel-provider-ui (frontend nginx)
 
@@ -173,22 +193,43 @@ Dev local: set `VITE_EXCEL_API_URL=http://localhost:5600` hoặc dùng Vite prox
 
 ## 8. Setup lần đầu
 
-### Bước 1: Seed HDOS Database
-```bash
-# Chạy V009 migration vào HDOS postgres (host port 5433)
-psql -h <HDOS_HOST> -p 5433 -U hdos -d hdos -f db/V009__excel_provider_seed.sql
-```
-> Chỉ cần làm 1 lần. Migration này đăng ký excel-provider và 7 operations vào HDOS DB.
+### Bước 1: Đăng ký provider trên HDOS Admin UI
+
+Vào **HDOS Admin UI → trang Admin → tab Providers**:
+
+1. Nếu `excel-provider` chưa tồn tại → **"Đăng ký Provider"**:
+   - Provider ID: `excel-provider`
+   - Display Name: `Excel Provider`
+   - Client ID: `excel-provider`
+   - Client Secret: nhập bất kỳ (sẽ đổi ở bước tiếp theo)
+   - Operations: `report.dashboard.summary`, `report.sales.trend`, `report.inventory.status`, `report.regional.performance`, `report.channel.comparison`, `report.product.detail`, `report.top.performers`
+
+2. Chuyển sang **tab Credentials** của `excel-provider`:
+   - **"Đặt secret cụ thể"** → nhập secret mong muốn → Lưu  
+     *(hoặc dùng "Xoay key" để tự sinh ngẫu nhiên)*
+   - **"Tạo Bootstrap Token"** → copy token này
 
 ### Bước 2: Cấu hình .env
 ```bash
 cp .env.example .env
-# Sửa HDOS_HOST thành IP thực của server chạy HDOS
+```
+
+Sửa `.env`:
+```env
+HDOS_HOST=192.168.1.100          # ← IP thực của server chạy HDOS
+HDOS_BOOTSTRAP_TOKEN=<token>     # ← token lấy từ bước 1
 ```
 
 ### Bước 3: Chạy stack
 ```bash
 docker compose up -d
+```
+
+Provider sẽ tự động gọi HDOS bootstrap API để lấy `ClientSecret` khi khởi động.  
+Kiểm tra log để xác nhận:
+```bash
+docker logs excel-provider-excel-provider-1 2>&1 | grep -i bootstrap
+# Expected: ClientSecret fetched from HDOS bootstrap — provider ready to authenticate.
 ```
 
 ### Bước 4: Kiểm tra
