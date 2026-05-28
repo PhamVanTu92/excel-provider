@@ -192,6 +192,7 @@ public sealed class ProviderBridgeClient : BackgroundService
             stream.RequestStream, writeLock, heartbeatInterval, heartbeatCts.Token);
 
         bool refreshRequested = false;
+        bool done = false;
 
         try
         {
@@ -220,15 +221,26 @@ public sealed class ProviderBridgeClient : BackgroundService
                             msg.RefreshAuth.Reason,
                             DateTimeOffset.FromUnixTimeMilliseconds(msg.RefreshAuth.CurrentTokenExpiresAtUnixMs));
                         refreshRequested = true;
-                        goto doneReading;
+                        done = true;
+                        break;
 
                     case ToProvider.MessageOneofCase.Disconnect:
                         _logger.LogWarning("Disconnect received from bridge: {Reason}",
                             msg.Disconnect.Reason);
-                        goto doneReading;
+                        done = true;
+                        break;
                 }
+
+                if (done) break;
             }
-            doneReading:;
+        }
+        catch (RpcException ex)
+        {
+            // Bridge closed the stream (e.g. immediately after RefreshAuth).
+            // DisposeAsync on the gRPC enumerator throws RpcException when the
+            // server side has already closed — treat it as a normal session end.
+            _logger.LogDebug("gRPC stream closed by bridge ({Status}): {Detail}",
+                ex.StatusCode, ex.Status.Detail);
         }
         finally
         {
@@ -250,7 +262,7 @@ public sealed class ProviderBridgeClient : BackgroundService
             {
                 _logger.LogWarning("Drain timeout; cancelling remaining in-flight requests");
                 _dispatcher.CancelAll();
-                await Task.Delay(2_000, ct); // brief window for handlers to write Terminal(CANCELLED)
+                try { await Task.Delay(2_000, ct); } catch (OperationCanceledException) { /* host stopping */ }
             }
 
             // Acquire fresh token for next reconnect attempt
