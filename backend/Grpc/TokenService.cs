@@ -86,6 +86,23 @@ public sealed class TokenService
         var response = await _http.PostAsJsonAsync(
             _opts.TokenEndpoint, request, TokenJsonContext.Default.TokenRequest, ct);
 
+        // ── Auto re-bootstrap on 401 ──────────────────────────────────────────
+        // The token endpoint returns Unauthorized when the ClientSecret has been
+        // rotated on the HDOS side.  If bootstrap is configured, fetch a fresh
+        // secret and retry once — rotation becomes transparent (no restart needed).
+        if (response.StatusCode == System.Net.HttpStatusCode.Unauthorized
+            && await TryReBootstrapAsync(ct))
+        {
+            request = new TokenRequest
+            {
+                ClientId     = _opts.ClientId,
+                ClientSecret = _opts.ClientSecret,   // updated by TryReBootstrapAsync
+                GrantType    = "client_credentials",
+            };
+            response = await _http.PostAsJsonAsync(
+                _opts.TokenEndpoint, request, TokenJsonContext.Default.TokenRequest, ct);
+        }
+
         if (!response.IsSuccessStatusCode)
         {
             var body = await response.Content.ReadAsStringAsync(ct);
@@ -104,6 +121,64 @@ public sealed class TokenService
 
         _logger.LogInformation("Token acquired, expires in {ExpiresIn}s", _expiresIn);
         return _cachedToken;
+    }
+
+    // ── Re-bootstrap ──────────────────────────────────────────────────────────
+
+    /// <summary>
+    /// Fetches a fresh <c>ClientSecret</c> from the HDOS bootstrap API when
+    /// the current secret is rejected (admin rotated credentials).
+    ///
+    /// Updates <see cref="ProviderOptions.ClientSecret"/> in-place so all
+    /// components sharing the same <c>IOptions&lt;ProviderOptions&gt;</c>
+    /// singleton automatically see the new value.
+    ///
+    /// No-op (returns <c>false</c>) when bootstrap is not configured.
+    /// </summary>
+    private async Task<bool> TryReBootstrapAsync(CancellationToken ct)
+    {
+        if (string.IsNullOrWhiteSpace(_opts.BootstrapToken) ||
+            string.IsNullOrWhiteSpace(_opts.BootstrapUrl))
+            return false;
+
+        var endpoint = $"{_opts.BootstrapUrl.TrimEnd('/')}/api/v1/providers/bootstrap";
+        _logger.LogInformation(
+            "ClientSecret rejected (401) — re-bootstrapping from {Url}", endpoint);
+
+        try
+        {
+            var resp = await _http.PostAsJsonAsync(
+                endpoint,
+                new BootstrapRequest(_opts.ClientId, _opts.BootstrapToken),
+                BootstrapJsonContext.Default.BootstrapRequest,
+                ct);
+
+            if (!resp.IsSuccessStatusCode)
+            {
+                var body = await resp.Content.ReadAsStringAsync(ct);
+                _logger.LogWarning(
+                    "Re-bootstrap returned {Status}: {Body}", resp.StatusCode, body);
+                return false;
+            }
+
+            var result = await resp.Content.ReadFromJsonAsync(
+                BootstrapJsonContext.Default.BootstrapResponse, ct);
+
+            if (result is null || string.IsNullOrWhiteSpace(result.ClientSecret))
+            {
+                _logger.LogWarning("Re-bootstrap returned an empty clientSecret");
+                return false;
+            }
+
+            _opts.ClientSecret = result.ClientSecret;
+            _logger.LogInformation("Re-bootstrap succeeded — new ClientSecret applied in-memory");
+            return true;
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "Re-bootstrap HTTP request failed");
+            return false;
+        }
     }
 }
 
