@@ -16,7 +16,9 @@
       "Bash(git commit -m 'fix: tách subscription thành service riêng chạy sau khi postgres healthy *)",
       "Bash(Move-Item \"E:\\\\Project\\\\excel-provider\\\\db\\\\docker-init\\\\create-subscription.sh\" \"E:\\\\Project\\\\excel-provider\\\\db\\\\scripts\\\\create-subscription.sh\")",
       "Bash(git commit -m 'fix: chuyển create-subscription.sh ra db/scripts/ để tránh bị postgres initdb chạy *)",
-      "Bash(git commit -m 'fix: tách CREATE FUNCTION ra command riêng để tránh Npgsql lỗi parse dollar-quoting *)"
+      "Bash(git commit -m 'fix: tách CREATE FUNCTION ra command riêng để tránh Npgsql lỗi parse dollar-quoting *)",
+      "Bash(Remove-Item \"E:\\\\Project\\\\excel-provider\\\\backend\\\\Database\\\\ReportingDb.cs\" -Force)",
+      "Bash(Remove-Item \"E:\\\\Project\\\\excel-provider\\\\backend\\\\Services\\\\ReplicationListenerService.cs\" -Force)"
     ]
   }
 }
